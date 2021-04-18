@@ -1,13 +1,14 @@
 #include <stdio.h>  // printf
 #include <assert.h> //assert
-#include <unistd.h> // fork and exec
+#include <unistd.h> // pipe, fork, dup2, close, read, exec
 #include <string.h>   // strtok
+#include <fcntl.h>
+#include <stdbool.h>
 //#include <wait.h>
-#define MAX_LINE 80
 
 void readInput(char *commands[], int* first_command_length, char *secondCommand[], int *second_command_length)
 {
-    char user_input[MAX_LINE]; 
+    char user_input[80]; 
     const char s[1] = " ";
     
     int length = read(STDIN_FILENO, user_input, 80);
@@ -73,18 +74,18 @@ void readInput(char *commands[], int* first_command_length, char *secondCommand[
 
 int main(void)
 {
-    char *args[MAX_LINE / 2 + 1]; /* command line arguments */
+    char *args[80 / 2 + 1]; /* command line arguments */
     int should_run = 1; /* flag to determine when to exit program */
     pid_t pid = 0;
     int command_count = 0;
-    int num_using_pipe = 0;
-    char* secondCommand[MAX_LINE / 2 + 1];
+    bool used_pipe;
+    char* secondCommand[80 / 2 + 1];
     int hasSecond = 0;
     while(should_run)
     {
-        num_using_pipe = 0;  // reset 
-        fflush(stdout);
+        used_pipe = false;  // reset         
         printf("osh>");
+        fflush(stdout);
 
         // read the user's input 
         readInput(args, &command_count, secondCommand, &hasSecond);   
@@ -98,44 +99,120 @@ int main(void)
             }
             else
             {
-                int redirect_case = 0;
-                //int file;
+                int redirect = 0;
+                int file = 0;
+
                 for (int i = 1; i <= command_count-1; i++)
                 {
-                    if (strcmp(args[i], "<") == 0)
+                    if (strcmp(args[i], ">") == 0)
                     {
-
+                        // It gives all the permission with 0666.
+                        // It creates a new file and write the targeting file
+                        // to the new file. 
+                        file = open(args[i+1], O_WRONLY | O_CREAT, 0666); 
+                        if(file == -1)
+                        {
+                            printf("There is an issue on this file");
+                            exit(1);
+                        }
+                        dup2(file, 1); // output
+                        args[i] = NULL;
+                        args[i+1] = NULL;
+                        redirect = 2;
+                        break;
                     }
-                    else if (strcmp(args[i], ">") == 0)
+                    else if (strcmp(args[i], "<") == 0)
                     {
-                        
-                    }
+                        file = open(args[i+1], O_RDONLY); // for read only
+                        if(file == -1)
+                        {
+                            printf("There is an issue on this file");
+                            exit(1);
+                        }
+                        dup2(file, 0); // input
+                        args[i] = NULL;
+                        args[i+1] = NULL;
+                        redirect = 1;
+                        break;
+                    }                    
                     else if (strcmp(args[i], "|") == 0)
                     {
 
+                        // These below chars will have one additonal 
+                        //      length to store NULL at the end of the array.
+                        char* firstCommand [i-1]; // Former command 
+                        char* secondCommand [command_count-i]; // Latter one
+
+                        // Store the command in args to firstCommand
+                        for(int j=0; j<i; j++)
+                        {
+                            firstCommand[j] = args[j];
+                        }
+                        firstCommand[i] = NULL;
+
+                        // Ditto to secondCommand
+                        for(int j=1; j<command_count-i; j++)
+                        {
+                            secondCommand[j] = args[i+j];
+                        }
+                        secondCommand[command_count-i] = NULL;
+
+                        // Set Pipe 
+                        int fd[2];
+                        if(pipe(fd) < 0)
+                        {
+                            printf("pipe error");
+                            exit(1);
+                        }
+                        used_pipe = true;
+                        int pid2 = fork();
+
+                        if(pid2 == 0)
+                        {
+                            // Child process
+                            close(fd[0]); // not gonna read
+                            dup2[fd[1], 1];
+                            if(execvp(firstCommand[0], firstCommand) == -1)
+                            {
+                                printf("pipe failed due to a first command");
+                                exit(1);
+                            }
+                            close(fd[1]);
+                        }
+                        else
+                        {
+                            // Parent proces
+                            wait(NULL);    // wait until child writes 
+                            close(fd[1]);  // not gonna write
+                            dup2(fd[0],0);
+                            if(execvp(secondCommand[0], secondCommand) == -1)
+                            {
+                                printf("pipe failed due to a second command");
+                                exit(1);
+                            }
+                            close(fd[0]);
+                        }
                     }
                 }
 
-                // Areguments don't have redirect
-                if(num_using_pipe == 0)
+                // Areguments don't have redirect such as "ls"
+                if(used_pipe)
                 {
                     if(execvp(args[0], args) == -1)
                     {
                         printf("First command is an invalid command\n");
-                        //return 1;
+                        return 1;
                     }
                 }
-                /*
-                if (redirectCase == 1) {
-                    close(STDIN_FILENO);
+                if (redirect == 1) {
+                    close(0); // close the reading
 
-                } else if (redirectCase == 2) {
-                    close(STDOUT_FILENO);
+                } else if (redirect == 2) {
+                    close(1); // close the writing
                 }
-                close(file);
-                */
+                close(file); // close the entire file
             }
-            //exit(1);            
+            exit(1); // exit when there is an issue
         }
         else if(pid > 0)
         {
@@ -155,7 +232,7 @@ int main(void)
             }
         }
         else
-            printf("Error fork!!");
+            printf("There is an error with fork()");
     }
     return 0;
 }
